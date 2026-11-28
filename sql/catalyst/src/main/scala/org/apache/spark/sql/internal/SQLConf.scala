@@ -7252,6 +7252,17 @@ object SQLConf {
       .booleanConf
       .createWithDefault(false)
 
+  val PRUNE_NESTED_FIELDS_THROUGH_UNNEST =
+    buildConf("spark.sql.optimizer.pruneNestedFieldsThroughUnnest")
+      .internal()
+      .doc("When true, struct fields that a query does not use after an UNNEST are not " +
+        "carried through it, as for explode. A streaming query keeps the value recorded in " +
+        "its checkpoint, and a query restarted from a checkpoint without it uses false.")
+      .version("4.5.0")
+      .withBindingPolicy(ConfigBindingPolicy.NOT_APPLICABLE)
+      .booleanConf
+      .createWithDefault(true)
+
   object Deprecated {
     val MAPRED_REDUCE_TASKS = "mapred.reduce.tasks"
   }

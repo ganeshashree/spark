@@ -114,6 +114,20 @@ class OffsetSeqLogSuite extends SharedSparkSession {
       SQLConf.PROPAGATE_EMPTY_RELATION_CAN_PRUNE_STREAMING_UNION_CHILDREN.key).contains("false"))
   }
 
+  test("SPARK-62411: old checkpoints do not prune nested fields through UNNEST") {
+    val (_, offsetSeq) = readFromResource("offset-log-version-2.1.0")
+    val metadata = offsetSeq.metadataOpt.get
+    val entry = SQLConf.PRUNE_NESTED_FIELDS_THROUGH_UNNEST
+    assert(!metadata.conf.contains(entry.key))
+    assert(!OffsetSeqMetadata.readValue(metadata, entry).toBoolean)
+  }
+
+  test("SPARK-62411: new checkpoints prune nested fields through UNNEST") {
+    val metadata = OffsetSeqMetadata(
+      batchWatermarkMs = 0, batchTimestampMs = 0, spark.conf)
+    assert(metadata.conf.get(SQLConf.PRUNE_NESTED_FIELDS_THROUGH_UNNEST.key).contains("true"))
+  }
+
   test("SPARK-60632: regex pattern cost estimate is version 0 for old checkpoints") {
     val (_, offsetSeq) = readFromResource("offset-log-version-2.1.0")
     val metadata = offsetSeq.metadataOpt.get

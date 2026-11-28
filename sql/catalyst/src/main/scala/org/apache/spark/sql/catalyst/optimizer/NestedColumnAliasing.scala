@@ -374,6 +374,8 @@ object GeneratorNestedColumnAliasing {
         SQLConf.get.nestedSchemaPruningEnabled) && canPruneGenerator(g.generator) =>
       // On top on `Generate`, a `Project` that might have nested column accessors.
       // We try to get alias maps for both project list and generator's children expressions.
+      // TODO(SPARK-62419): A struct whose fields are all used, some only by the generator and the
+      // rest above it, is not aliased, so it is copied whole into every generated row.
       val attrToExtractValues = NestedColumnAliasing.getAttributeToExtractValues(
         projectList ++ g.generator.children, Seq.empty)
       if (attrToExtractValues.isEmpty) {
@@ -514,7 +516,7 @@ object GeneratorNestedColumnAliasing {
     case _: PosExplode => true
     case _: Inline => true
     // Unlike for ExplodeBase, fields read from the UNNEST output are not pushed into its input.
-    case _: Unnest => true
+    case _: Unnest => SQLConf.get.getConf(SQLConf.PRUNE_NESTED_FIELDS_THROUGH_UNNEST)
     case _ => false
   }
 }

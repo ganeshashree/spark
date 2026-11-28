@@ -27,6 +27,7 @@ import org.apache.spark.sql.catalyst.expressions._
 import org.apache.spark.sql.catalyst.plans.Cross
 import org.apache.spark.sql.catalyst.plans.logical._
 import org.apache.spark.sql.catalyst.rules.RuleExecutor
+import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.{ArrayType, IntegerType, StringType, StructField, StructType}
 
 class NestedColumnAliasingSuite extends SchemaPruningTest {
@@ -534,6 +535,27 @@ class NestedColumnAliasingSuite extends SchemaPruningTest {
       .select($"${aliases(0)}".as("doc.a"), $"${aliases(1)}".as("doc.b"), $"x", $"y")
       .analyze
     comparePlans(rewritten, expected)
+  }
+
+  test("SPARK-62411: UNNEST is not pruned with pruneNestedFieldsThroughUnnest off") {
+    val document = LocalRelation(
+      $"id".int,
+      $"doc".struct(StructType.fromDDL("ts string, extra string, items array<int>")))
+    def query(generator: Generator): LogicalPlan = document
+      .generate(generator, outputNames = Seq("item"))
+      .select($"id", $"doc".getField("ts"), $"item")
+      .analyze
+    val unnest = query(Unnest(Seq($"doc".getField("items")), withOrdinality = false))
+    val unpruned = withSQLConf(
+        SQLConf.NESTED_SCHEMA_PRUNING_ENABLED.key -> "false",
+        SQLConf.NESTED_PRUNING_ON_EXPRESSIONS.key -> "false") {
+      Optimize.execute(unnest)
+    }
+    withSQLConf(SQLConf.PRUNE_NESTED_FIELDS_THROUGH_UNNEST.key -> "false") {
+      comparePlans(Optimize.execute(unnest), unpruned)
+      val explode = Optimize.execute(query(Explode($"doc".getField("items"))))
+      assert(collectGeneratedAliases(explode).nonEmpty, explode)
+    }
   }
 
   test("Nested field pruning through RepartitionByExpression") {

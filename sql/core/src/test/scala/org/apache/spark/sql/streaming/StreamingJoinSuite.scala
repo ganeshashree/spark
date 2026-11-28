@@ -35,7 +35,7 @@ import org.apache.spark.scheduler.ExecutorCacheTaskLocation
 import org.apache.spark.sql.{AnalysisException, DataFrame, Row, SparkSession}
 import org.apache.spark.sql.catalyst.expressions.{AttributeReference, Expression}
 import org.apache.spark.sql.catalyst.plans.{LeftOuter, RightOuter}
-import org.apache.spark.sql.catalyst.plans.logical.EventTimeWatermark
+import org.apache.spark.sql.catalyst.plans.logical.{EventTimeWatermark, Generate}
 import org.apache.spark.sql.catalyst.plans.physical.HashPartitioning
 import org.apache.spark.sql.execution.datasources.v2.state.StateSourceOptions
 import org.apache.spark.sql.execution.exchange.ShuffleExchangeExec
@@ -1553,6 +1553,86 @@ abstract class StreamingInnerJoinBase extends StreamingJoinSuite {
         CheckNewAnswer(),
         AddData(rightInput, (1, 88)),
         CheckNewAnswer(Row(1, true, 88L)))
+    }
+  }
+
+  Seq(false, true).foreach { missing =>
+    test(s"SPARK-62411: UNNEST over a join keeps its join state schema (missing=$missing)") {
+      withTempDir { checkpoint =>
+        withTempView("docs", "keys") {
+          val entry = SQLConf.PRUNE_NESTED_FIELDS_THROUGH_UNNEST
+          val leftInput = MemoryStream[(Int, String, Int)]
+          val rightInput = MemoryStream[Int]
+          leftInput.toDF().toDF("k", "ts", "n")
+            .select($"k", struct($"ts", lit("x").as("extra"),
+              sequence(lit(1), $"n").as("items")).as("doc"))
+            .createOrReplaceTempView("docs")
+          rightInput.toDF().toDF("k").createOrReplaceTempView("keys")
+          val joined = sql("SELECT docs.k, doc.ts, item FROM docs JOIN keys ON docs.k = keys.k, " +
+            "LATERAL UNNEST(doc.items) AS u(item)")
+
+          // Without pruning, the join state stores the whole `doc` struct.
+          def checkPlan(pruned: Boolean)(query: StreamExecution): Unit = {
+            assert(query.sparkSessionForStream.conf.get(entry.key) == pruned.toString)
+            assert(query.offsetLog.getLatest().get._2.metadataOpt.get
+              .conf.get(entry.key).contains(pruned.toString))
+            val join = query.lastExecution.executedPlan.collectFirst {
+              case join: StreamingSymmetricHashJoinExec => join
+            }.get
+            assert(join.left.output.exists(_.dataType.isInstanceOf[StructType]) == !pruned,
+              join.left.output)
+            val generate = query.lastExecution.optimizedPlan.collectFirst {
+              case g: Generate => g
+            }.get
+            assert(generate.child.output.exists(_.dataType.isInstanceOf[StructType]) == !pruned,
+              generate.child.output)
+          }
+
+          withSQLConf(SQLConf.NESTED_SCHEMA_PRUNING_ENABLED.key -> "true") {
+            // A missing entry stands for a checkpoint written before UNNEST was pruned.
+            testStream(joined)(
+              StartStream(
+                additionalConfs = if (missing) Map(entry.key -> "false") else Map.empty,
+                checkpointLocation = checkpoint.getCanonicalPath),
+              AddData(leftInput, (1, "t1", 2)),
+              CheckNewAnswer(),
+              AddData(rightInput, 1),
+              CheckNewAnswer((1, "t1", 1), (1, "t1", 2)),
+              Execute(checkPlan(pruned = !missing)),
+              StopStream)
+
+            if (missing) {
+              val offsetsPath = checkpoint.getCanonicalPath + "/offsets"
+              val offsetLog = new OffsetSeqLog(spark, offsetsPath)
+              (0L to offsetLog.getLatest().get._1).foreach { batchId =>
+                val updated = offsetLog.get(batchId).get match {
+                  case offsets: OffsetSeq =>
+                    offsets.copy(metadataOpt = offsets.metadataOpt.map { metadata =>
+                      metadata.copy(conf = metadata.conf - entry.key)
+                    })
+                  case offsets: OffsetMap =>
+                    offsets.copy(metadata = offsets.metadata.copy(
+                      conf = offsets.metadata.conf - entry.key))
+                }
+                val batchFile = new Path(offsetsPath, batchId.toString)
+                val fs = batchFile.getFileSystem(spark.sessionState.newHadoopConf())
+                assert(fs.delete(batchFile, false))
+                assert(offsetLog.add(batchId, updated))
+              }
+            }
+
+            // The restarted query reads the join state written by the first run.
+            testStream(joined)(
+              StartStream(checkpointLocation = checkpoint.getCanonicalPath),
+              AddData(leftInput, (1, "t2", 1)),
+              CheckNewAnswer((1, "t2", 1)),
+              AddData(rightInput, 1),
+              CheckNewAnswer((1, "t1", 1), (1, "t1", 2), (1, "t2", 1)),
+              Execute(checkPlan(pruned = !missing)),
+              StopStream)
+          }
+        }
+      }
     }
   }
 }
