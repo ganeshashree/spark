@@ -24,6 +24,7 @@ import org.apache.spark.sql.catalyst.expressions.codegen._
 import org.apache.spark.sql.catalyst.expressions.codegen.Block._
 import org.apache.spark.sql.catalyst.plans.physical.Partitioning
 import org.apache.spark.sql.execution.metric.SQLMetrics
+import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types._
 import org.apache.spark.util.ArrayImplicits._
 
@@ -133,7 +134,10 @@ case class GenerateExec(
     }
   }
 
-  override def supportCodegen: Boolean = generator.supportCodegen
+  override def supportCodegen: Boolean = generator match {
+    case _: Unnest => conf.getConf(SQLConf.ENABLE_UNNEST_CODEGEN)
+    case g => g.supportCodegen
+  }
 
   override def inputRDDs(): Seq[RDD[InternalRow]] = {
     child.asInstanceOf[CodegenSupport].inputRDDs()
@@ -293,6 +297,8 @@ case class GenerateExec(
     val maxNumElements = numElements.reduceLeft((a, b) => s"java.lang.Math.max($a, $b)")
     val init = if (outer) s"$numRows == 0 ? -1 : 0" else "0"
     val numOutput = metricTerm(ctx, "numOutputRows")
+    // Like the other generator loops, this runs to completion for each input row: rows leaving the
+    // stage are all buffered first, and a LIMIT above the stage cannot stop it early.
     s"""
        |${arrays.map(_.code).mkString("\n")}
        |${initNumElements.mkString("\n")}

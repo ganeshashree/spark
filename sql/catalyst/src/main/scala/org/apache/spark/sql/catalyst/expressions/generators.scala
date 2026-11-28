@@ -779,7 +779,8 @@ object InlineOuterGeneratorBuilder extends InlineGeneratorBuilderBase {
  * Under whole-stage codegen, `GenerateExec` generates the loop over the arrays itself (see
  * `GenerateExec.codeGenUnnest`): the per-array zip with NULL padding and the ordinality do not
  * map onto the [[CollectionGenerator]] code path, which reads a single `ArrayData`/`MapData`.
- * [[eval]] is the interpreted path.
+ * Like the loop for `explode`, it produces all rows of an input row in one pass. [[eval]] is the
+ * interpreted path and builds the rows lazily.
  */
 case class Unnest(children: Seq[Expression], withOrdinality: Boolean)
   extends Generator {
@@ -836,9 +837,10 @@ case class Unnest(children: Seq[Expression], withOrdinality: Boolean)
     val numArrays = arrays.length
     val numFields = if (withOrdinality) numArrays + 1 else numArrays
     // Build each output row lazily so that neither a single wide array nor a correlated LATERAL
-    // UNNEST over many input rows materializes the whole expansion up front; GenerateExec pulls
-    // rows one at a time. The iterator is single-pass but only ever traversed once per input row
-    // (GenerateExec's `outer` emptiness check uses `hasNext`, which does not build a row).
+    // UNNEST over many input rows materializes the whole expansion up front; the interpreted
+    // GenerateExec pulls rows one at a time (whole-stage codegen does not call this). The iterator
+    // is single-pass but only ever traversed once per input row (GenerateExec's `outer` emptiness
+    // check uses `hasNext`, which does not build a row).
     (0 until numRows).iterator.map { row =>
       val fields = new Array[Any](numFields)
       var col = 0

@@ -486,6 +486,22 @@ class WholeStageCodegenSuite extends SharedSparkSession
     }
   }
 
+  test("SPARK-62412: UNNEST code generation can be turned off on its own") {
+    withSQLConf(
+        SQLConf.WHOLESTAGE_CODEGEN_ENABLED.key -> "true",
+        SQLConf.ENABLE_UNNEST_CODEGEN.key -> "false") {
+      checkGenerateCodegen(
+        sql("SELECT id, x, o FROM range(1, 3), " +
+          "LATERAL UNNEST(sequence(1, id)) WITH ORDINALITY AS u(x, o)"),
+        codegenEnabled = "false",
+        Seq(Row(1L, 1L, 1L), Row(2L, 1L, 1L), Row(2L, 2L, 2L)))
+      checkGenerateCodegen(
+        spark.range(1, 3).selectExpr("id", "explode(sequence(1, id))"),
+        codegenEnabled = "true",
+        Seq(Row(1L, 1L), Row(2L, 1L), Row(2L, 2L)))
+    }
+  }
+
   test("HashAggregate with grouping keys should be included in WholeStageCodegen") {
     val df = spark.range(3).groupBy(col("id") * 2).count().orderBy(col("id") * 2)
     val plan = df.queryExecution.executedPlan

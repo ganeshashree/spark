@@ -4856,6 +4856,16 @@ object SQLConf {
       .booleanConf
       .createWithDefault(true)
 
+  val ENABLE_UNNEST_CODEGEN =
+    buildConf("spark.sql.codegen.unnest.enabled")
+      .internal()
+      .doc("When true, enable code-gen for UNNEST. The generated code produces all rows of an " +
+        "input row at once, while the interpreted path builds them lazily, one at a time.")
+      .version("4.5.0")
+      .withBindingPolicy(ConfigBindingPolicy.NOT_APPLICABLE)
+      .booleanConf
+      .createWithDefault(true)
+
   val MAX_NESTED_VIEW_DEPTH =
     buildConf("spark.sql.view.maxNestedViewDepth")
       .internal()
